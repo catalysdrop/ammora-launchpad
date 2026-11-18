@@ -70,6 +70,12 @@ export async function connectWallet(): Promise<WalletState> {
   const accounts = (await eth.request({ method: "eth_accounts" })) as string[];
   if (!accounts[0]) throw new Error("No account returned by the wallet.");
   const address = accounts[0] as Address;
+  // Verify the WALLET's own chain, not just the RPC's: a wallet that did not
+  // actually switch (or was switched back) must not be treated as connected.
+  const walletChainIdHex = (await eth.request({ method: "eth_chainId" })) as string;
+  if (walletChainIdHex.toLowerCase() !== `0x${CHAIN_ID.toString(16)}`) {
+    throw new Error(`Wallet is on chain ${walletChainIdHex}; switch to GIWA Sepolia (${CHAIN_ID}) before connecting.`);
+  }
   const client = getPublicClient();
   const chainId = await client.getChainId();
   if (chainId !== CHAIN_ID) throw new Error(`Wallet is on chain ${chainId}; this app only works on GIWA Sepolia (${CHAIN_ID}).`);
@@ -115,8 +121,13 @@ export function WalletPanel({
       const amount = parseUnits(wrapAmount || "0", direction === "wrap" ? 18 : wallet.wethDecimals);
       if (amount <= 0n) throw new Error("Amount must be greater than zero.");
       if (direction === "wrap") {
-        if (amount > wallet.eth) throw new Error("Amount exceeds your native test ETH balance. Keep some ETH for gas.");
-        // Wrapping needs no ERC-20 approval. Keep a gas reserve: never wrap everything.
+        // Keep a gas reserve: wrapping everything leaves 0 ETH for the gas
+        // of the next transaction (and the wrap itself would fail simulation).
+        const GAS_RESERVE = parseUnits("0.001", 18);
+        if (amount > wallet.eth - GAS_RESERVE) {
+          throw new Error("Keep at least 0.001 test ETH aside for gas — reduce the wrap amount.");
+        }
+        // Wrapping needs no ERC-20 approval.
         const receipt = await sendTransaction(
           client,
           walletClient,

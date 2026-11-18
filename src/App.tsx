@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { isAddress, type Address } from "viem";
+import { erc20Abi, isAddress, type Address } from "viem";
 import {
   CHAIN_ID,
   DEPLOYMENT,
@@ -73,7 +73,20 @@ export default function App() {
         connectWallet().then(setWallet).catch((e) => setAppError(e instanceof Error ? e.message : String(e)));
       }
     };
-    const onChain = () => refreshWallet();
+    const onChain = (chainIdHex: unknown) => {
+      // The wallet moved chains after connecting. If it left GIWA Sepolia,
+      // drop the session instead of showing GIWA balances for another chain;
+      // every send re-checks the wallet chain as well.
+      if (String(chainIdHex).toLowerCase() !== `0x${CHAIN_ID.toString(16)}`) {
+        setWallet(null);
+        setAppError(
+          `Wallet moved to chain ${String(chainIdHex)}. This app only works on GIWA Sepolia (${CHAIN_ID}) — switch back in your wallet and reconnect.`,
+        );
+      } else {
+        setAppError("");
+        refreshWallet();
+      }
+    };
     eth.on("accountsChanged", onAccounts as (...args: unknown[]) => void);
     eth.on("chainChanged", onChain as (...args: unknown[]) => void);
     return () => {
@@ -96,13 +109,19 @@ export default function App() {
       const client = getPublicClient();
       const { readCurve } = await import("./lib/ammora");
       const view = await readCurve(client, curve as Address);
+      // Read the token's own name/symbol instead of showing a truncated
+      // address; a token without ERC-20 metadata falls back to the address.
+      const [tokenName, tokenSymbol] = await Promise.all([
+        client.readContract({ abi: erc20Abi, address: view.state.baseToken, functionName: "name" }).catch(() => ""),
+        client.readContract({ abi: erc20Abi, address: view.state.baseToken, functionName: "symbol" }).catch(() => ""),
+      ]);
       const launch: SavedLaunch = {
         configId: view.state.configId.toString(),
         configHash: "",
         token: view.state.baseToken,
         curve: curve as Address,
-        name: view.state.baseToken.slice(0, 10),
-        symbol: "?",
+        name: String(tokenName) || view.state.baseToken.slice(0, 10),
+        symbol: String(tokenSymbol) || "?",
         creator: view.state.creator,
         createdBlock: view.blockNumber.toString(),
         configTx: "",
@@ -138,8 +157,9 @@ export default function App() {
           )}
           {deployStatus.kind === "error" && (
             <span className="err">
-              Deployment check failed: the GIWA Sepolia RPC did not respond in time from this
-              network. The app re-checks before every transaction — tap Re-check to try again.
+              Deployment check failed: neither GIWA Sepolia RPC endpoint (official nor the Pocket
+              fallback) responded in time from this network. The app re-checks before every
+              transaction — tap Re-check to try again.
               <details>
                 <summary>Technical details</summary>
                 {deployStatus.message}

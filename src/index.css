@@ -63,8 +63,8 @@ code { font-family: var(--mono); font-size: 13px; background: #eef2f5; padding: 
 .facts dt { color: var(--muted); font-size: 14px; }
 .facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 
-.err { background: var(--err-bg); color: var(--err); border-radius: 8px; padding: 10px 12px; }
-.ok { background: var(--ok-bg); color: var(--ok); border-radius: 8px; padding: 10px 12px; }
+.err { background: var(--err-bg); color: var(--err); border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
+.ok { background: var(--ok-bg); color: var(--ok); border-radius: 8px; padding: 10px 12px; overflow-wrap: anywhere; }
 
 .progress { height: 10px; background: #e6edf2; border-radius: 6px; overflow: hidden; margin: 10px 0; }
 .progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }

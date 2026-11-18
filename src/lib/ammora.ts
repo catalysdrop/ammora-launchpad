@@ -282,7 +282,9 @@ export async function planMigrate(
   return { to: migration.transaction.to, data: migration.transaction.data };
 }
 
-/** Exact-amount ERC-20 approval only — never unlimited. */
+/** Exact-amount ERC-20 approval only — never unlimited.
+ *  The caller passes the only spender and tokens it will accept; anything
+ *  else is refused before any allowance is read or written. */
 export async function ensureApproval(
   client: PublicClient,
   wallet: WalletClient,
@@ -291,7 +293,19 @@ export async function ensureApproval(
   spender: Address,
   amount: bigint,
   onStatus: (msg: string) => void,
+  expected?: { spender: Address; tokens: readonly Address[] },
 ): Promise<Hash | null> {
+  if (amount <= 0n) throw new Error("Approval amount must be positive.");
+  if (expected) {
+    if (spender.toLowerCase() !== expected.spender.toLowerCase()) {
+      throw new Error(
+        `Refusing approval to unexpected spender ${spender}; the only allowed spender is ${expected.spender}.`,
+      );
+    }
+    if (!expected.tokens.some((t) => t.toLowerCase() === token.toLowerCase())) {
+      throw new Error(`Refusing approval for unexpected token ${token}.`);
+    }
+  }
   const allowance = await client.readContract({
     abi: erc20Abi,
     address: token,
@@ -299,7 +313,7 @@ export async function ensureApproval(
     args: [account, spender],
   });
   if (allowance >= amount) return null;
-  onStatus(`Approving exactly ${amount.toString()} raw units for ${spender.slice(0, 10)}…`);
+  onStatus(`Approving exactly ${amount.toString()} raw units of ${token} for ${spender} — exact amount only, never unlimited.`);
   const data = encodeFunctionData({
     abi: erc20Abi,
     functionName: "approve",
@@ -328,6 +342,22 @@ export async function sendTransaction(
   tx: { to: Address; data: `0x${string}`; value?: bigint },
   label: string,
 ): Promise<{ hash: Hash; blockNumber: bigint }> {
+  // Wallet-side guards, checked on every send: the wallet itself must be on
+  // GIWA Sepolia and signing from the account the UI shows. A wallet that
+  // moved to another chain (or another account) after connecting must never
+  // sign a transaction built for this chain/account.
+  const walletChainId = await wallet.getChainId();
+  if (walletChainId !== CHAIN_ID) {
+    throw new Error(
+      `Wallet is on chain ${walletChainId}; switch to GIWA Sepolia (${CHAIN_ID}) in your wallet before signing.`,
+    );
+  }
+  const connectedAccounts = await wallet.getAddresses();
+  if (!connectedAccounts.some((a) => a.toLowerCase() === account.toLowerCase())) {
+    throw new Error(
+      `Account ${account} is not connected in the wallet; reconnect the account shown in the app before signing.`,
+    );
+  }
   const [latestNonce, pendingNonce] = await Promise.all([
     client.getTransactionCount({ address: account, blockTag: "latest" }),
     client.getTransactionCount({ address: account, blockTag: "pending" }),

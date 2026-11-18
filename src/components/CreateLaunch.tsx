@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { buildCreateAmmoraV4Launch } from "@ammora-protocol/sdk";
+import { buildCreateAmmoraV4Launch, getAmmoraV4ConfigAtBlock } from "@ammora-protocol/sdk";
 import { parseUnits, type Address } from "viem";
 import {
   CHAIN_ID,
@@ -19,7 +19,7 @@ import {
   finalizedHead,
 } from "../lib/ammora";
 import { planTeamConfig, type TeamConfigPlan } from "../lib/derive";
-import { fmt, priceFromSqrt, shortAddr, shortHash } from "../lib/format";
+import { fmt, priceFromSqrt, shortHash } from "../lib/format";
 import { saveLaunch, type SavedLaunch } from "../lib/store";
 import type { WalletState } from "./WalletPanel";
 
@@ -39,8 +39,8 @@ export function CreateLaunch({
   const [metadataURI, setMetadataURI] = useState("");
   const [step, setStep] = useState<Step>("form");
   const [plan, setPlan] = useState<TeamConfigPlan | null>(null);
-  const [templateHash, setTemplateHash] = useState("");
   const [gasEstimate, setGasEstimate] = useState<bigint | null>(null);
+  const [launchValue, setLaunchValue] = useState<bigint | null>(null);
   const [configId, setConfigId] = useState<bigint | null>(null);
   const [configHash, setConfigHash] = useState("");
   const [configTx, setConfigTx] = useState("");
@@ -81,7 +81,6 @@ export function CreateLaunch({
       const p = planTeamConfig(snapshot, recipients, REGISTRY, CHAIN_ID, supplyRaw, thresholdRaw);
       const gas = await client.estimateGas({ account: wallet.address, to: p.transaction.to, data: p.transaction.data });
       setPlan(p);
-      setTemplateHash(snapshot.configHash);
       setGasEstimate(gas);
       setStep("configPreview");
       setStatus("");
@@ -120,7 +119,6 @@ export function CreateLaunch({
       setConfigTx(hash);
       const receipt = await client.getTransactionReceipt({ hash });
       const created = parseAmmoraV4ConfigCreatedReceipt(receipt, REGISTRY);
-      const { getAmmoraV4ConfigAtBlock } = await import("@ammora-protocol/sdk");
       const confirmed = await getAmmoraV4ConfigAtBlock(client, REGISTRY, created.configId, receiptBlock);
       if (
         confirmed.configHash !== created.configHash ||
@@ -148,15 +146,19 @@ export function CreateLaunch({
       const client = getPublicClient();
       const blockNumber = await finalizedHead(client);
       await verifyCore(client, blockNumber);
-      const { snapshot } = await readTemplateConfig(client);
-      if (snapshot.configHash !== templateHash) {
-        setError("Warning: template #6 changed since the Config was created. The Config you own is unaffected.");
+      // The pool creation fee comes from YOUR Config on-chain, not from the
+      // live template: the template may have changed since the Config was
+      // created, and the factory enforces the Config's own fee.
+      const configSnapshot = await getAmmoraV4ConfigAtBlock(client, REGISTRY, configId, blockNumber);
+      if (configSnapshot.configHash !== configHash) {
+        throw new Error("The on-chain Config does not match the Config created in the previous step. Do not sign; reconcile first.");
       }
       const tx = buildCreateAmmoraV4Launch(
         { name: name.trim(), symbol: symbol.trim().toUpperCase(), metadataURI: metadataURI.trim(), creatorMetadataURI: metadataURI.trim(), tokenDecimals: TOKEN_DECIMALS },
         configId,
-        snapshot.config.poolCreationFee,
+        configSnapshot.config.poolCreationFee,
       );
+      setLaunchValue(tx.value);
       const gas = await client.estimateGas({ account: wallet.address, to: FACTORY, data: tx.data, value: tx.value });
       setGasEstimate(gas);
       setStep("launchPreview");
@@ -176,11 +178,14 @@ export function CreateLaunch({
       const walletClient = getWalletClient(wallet.address);
       const blockNumber = await finalizedHead(client);
       await verifyCore(client, blockNumber);
-      const { snapshot } = await readTemplateConfig(client);
+      const configSnapshot = await getAmmoraV4ConfigAtBlock(client, REGISTRY, configId, blockNumber);
+      if (configSnapshot.configHash !== configHash) {
+        throw new Error("The on-chain Config does not match the Config created in the previous step. Do not sign; reconcile first.");
+      }
       const tx = buildCreateAmmoraV4Launch(
         { name: name.trim(), symbol: symbol.trim().toUpperCase(), metadataURI: metadataURI.trim(), creatorMetadataURI: metadataURI.trim(), tokenDecimals: TOKEN_DECIMALS },
         configId,
-        snapshot.config.poolCreationFee,
+        configSnapshot.config.poolCreationFee,
       );
       setStatus("Waiting for your signature in the wallet — creating the token…");
       const { hash, blockNumber: receiptBlock } = await sendTransaction(
@@ -267,7 +272,7 @@ export function CreateLaunch({
         <>
           <h3>Config preview — review before signing</h3>
           <dl className="facts">
-            <div><dt>Template</dt><dd>#6 · hash {shortHash(templateHash)} · enabled</dd></div>
+            <div><dt>Template</dt><dd>#6 · enabled</dd></div>
             <div><dt>Sale allocation</dt><dd>{fmt(plan.economics.saleAllocationRaw, TOKEN_DECIMALS)} {symbol.toUpperCase()}</dd></div>
             <div><dt>Total supply</dt><dd>{fmt(plan.economics.totalSupplyRaw, TOKEN_DECIMALS)} {symbol.toUpperCase()}</dd></div>
             <div><dt>Migration base</dt><dd>{fmt(plan.economics.grossMigrationBaseRaw, TOKEN_DECIMALS)} {symbol.toUpperCase()}</dd></div>
@@ -275,12 +280,12 @@ export function CreateLaunch({
             <div><dt>Start price</dt><dd>≈ {priceFromSqrt(plan.config.startSqrtPrice, TOKEN_DECIMALS, 18).toExponential(2)} WETH per token</dd></div>
             <div><dt>Cliff fee</dt><dd>{plan.config.cliffFeeBps} bps (1%)</dd></div>
             <div><dt>Creator share of non-protocol fees</dt><dd>{plan.config.creatorShareOfNonProtocolBps} bps</dd></div>
-            <div><dt>Config owner</dt><dd>{shortAddr(plan.recipients.configOwner)} (you)</dd></div>
-            <div><dt>Partner (fee claimer)</dt><dd>{shortAddr(plan.recipients.partnerRecipient.selected)} (you)</dd></div>
-            <div><dt>LP partner</dt><dd>{shortAddr(plan.recipients.liquidityPartner.selected)} (you)</dd></div>
-            <div><dt>Leftover receiver</dt><dd>{shortAddr(plan.recipients.leftoverReceiver.selected)} (you)</dd></div>
+            <div><dt>Config owner</dt><dd className="mono">{plan.recipients.configOwner} (you)</dd></div>
+            <div><dt>Partner (fee claimer)</dt><dd className="mono">{plan.recipients.partnerRecipient.selected} (you)</dd></div>
+            <div><dt>LP partner</dt><dd className="mono">{plan.recipients.liquidityPartner.selected} (you)</dd></div>
+            <div><dt>Leftover receiver</dt><dd className="mono">{plan.recipients.leftoverReceiver.selected} (you)</dd></div>
             <div><dt>Review hash</dt><dd className="mono">{shortHash(plan.reviewHash)}</dd></div>
-            <div><dt>To (Config registry)</dt><dd className="mono">{shortAddr(REGISTRY)}</dd></div>
+            <div><dt>To (Config registry)</dt><dd className="mono">{REGISTRY}</dd></div>
             <div><dt>Calldata</dt><dd>{(plan.transaction.data.length - 2) / 2} bytes · value 0 ETH</dd></div>
             {gasEstimate !== null && <div><dt>Gas estimate</dt><dd>{gasEstimate.toString()} units</dd></div>}
           </dl>
@@ -316,8 +321,8 @@ export function CreateLaunch({
           <dl className="facts">
             <div><dt>Token</dt><dd>{name.trim()} ({symbol.trim().toUpperCase()}) · {TOKEN_DECIMALS} decimals</dd></div>
             <div><dt>Config</dt><dd>#{configId.toString()}</dd></div>
-            <div><dt>To (launch factory)</dt><dd className="mono">{shortAddr(FACTORY)}</dd></div>
-            <div><dt>Pool creation fee (value)</dt><dd>0 ETH</dd></div>
+            <div><dt>To (launch factory)</dt><dd className="mono">{FACTORY}</dd></div>
+            <div><dt>Pool creation fee (value)</dt><dd>{launchValue !== null ? `${fmt(launchValue, 18)} ETH` : "…"}</dd></div>
             <div><dt>Metadata URI</dt><dd>{metadataURI.trim() || "(empty)"}</dd></div>
             {gasEstimate !== null && <div><dt>Gas estimate</dt><dd>{gasEstimate.toString()} units</dd></div>}
           </dl>
@@ -334,13 +339,13 @@ export function CreateLaunch({
         <>
           <h3>Launch created ✓</h3>
           <dl className="facts">
-            <div><dt>Token</dt><dd><a href={explorerToken(token)} target="_blank" rel="noreferrer">{shortAddr(token)}</a> · {name.trim()} ({symbol.trim().toUpperCase()})</dd></div>
-            <div><dt>Curve (ALC)</dt><dd><a href={explorerAddress(curve)} target="_blank" rel="noreferrer">{shortAddr(curve)}</a></dd></div>
+            <div><dt>Token</dt><dd><a href={explorerToken(token)} target="_blank" rel="noreferrer" className="mono">{token}</a> · {name.trim()} ({symbol.trim().toUpperCase()})</dd></div>
+            <div><dt>Curve (ALC)</dt><dd><a href={explorerAddress(curve)} target="_blank" rel="noreferrer" className="mono">{curve}</a></dd></div>
             <div><dt>Config</dt><dd>#{configId?.toString()}</dd></div>
             <div><dt>Launch tx</dt><dd><a href={explorerTx(launchTx)} target="_blank" rel="noreferrer">{shortHash(launchTx)}</a></dd></div>
           </dl>
           <p>Your launch is saved in this browser. Open it below to buy the first tokens, watch the curve, and graduate it.</p>
-          <button className="btn" onClick={() => { setStep("form"); setName(""); setSymbol(""); setPlan(null); setConfigId(null); setToken(null); setCurve(null); }}>
+          <button className="btn" onClick={() => { setStep("form"); setName(""); setSymbol(""); setMetadataURI(""); setPlan(null); setConfigId(null); setConfigHash(""); setConfigTx(""); setLaunchTx(""); setToken(null); setCurve(null); setGasEstimate(null); setLaunchValue(null); setStatus(""); setError(""); }}>
             Create another launch
           </button>
         </>
