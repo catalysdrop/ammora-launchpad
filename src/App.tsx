@@ -136,7 +136,16 @@ export default function App() {
               ✓ Deployment reachable · factory + registry have code · block {deployStatus.block}
             </span>
           )}
-          {deployStatus.kind === "error" && <span className="err">Deployment check failed: {deployStatus.message}</span>}
+          {deployStatus.kind === "error" && (
+            <span className="err">
+              Deployment check failed: the GIWA Sepolia RPC did not respond in time from this
+              network. The app re-checks before every transaction — tap Re-check to try again.
+              <details>
+                <summary>Technical details</summary>
+                {deployStatus.message}
+              </details>
+            </span>
+          )}
           <button className="btn small" onClick={checkDeployment}>Re-check</button>
         </div>
       </header>
