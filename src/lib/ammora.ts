@@ -43,6 +43,9 @@ import {
 
 export const CHAIN_ID = 91342;
 export const RPC_URL = "https://sepolia-rpc.giwa.io";
+/** Pocket Network public gateway for GIWA Sepolia (no key). The official RPC is
+ *  rate-limited and times out on eth_call under load; reads fall back here. */
+export const RPC_URL_FALLBACK = "https://giwa-sepolia-testnet.api.pocket.network";
 export const EXPLORER_URL = "https://sepolia-explorer.giwa.io";
 export const TEMPLATE_CONFIG_ID = 6n;
 export const TOKEN_DECIMALS = 9; // template #6
@@ -64,7 +67,7 @@ export const GIWA_SEPOLIA = defineChain({
   id: DEPLOYMENT.chain.id,
   name: DEPLOYMENT.chain.name,
   nativeCurrency: DEPLOYMENT.chain.nativeCurrency,
-  rpcUrls: { default: { http: [RPC_URL] } },
+  rpcUrls: { default: { http: [RPC_URL, RPC_URL_FALLBACK] } },
   blockExplorers: { default: { name: "GIWA Explorer", url: EXPLORER_URL } },
 });
 
@@ -72,18 +75,28 @@ export const explorerTx = (hash: string) => `${EXPLORER_URL}/tx/${hash}`;
 export const explorerAddress = (address: string) => `${EXPLORER_URL}/address/${address}`;
 export const explorerToken = (address: string) => `${EXPLORER_URL}/token/${address}`;
 
-/** Serialize RPC calls, 600ms apart — the public endpoint rate-limits bursts. */
+/** Serialize RPC calls, 600ms apart — the public endpoint rate-limits bursts.
+ *  Each call tries the official RPC first and falls back to the Pocket gateway
+ *  on any failure (network error / timeout), so a slow official endpoint no
+ *  longer blocks curve reads. */
 let tail: Promise<unknown> = Promise.resolve();
 let nextStart = 0;
 const pacedTransport = (parameters: Parameters<ReturnType<typeof http>>[0]) => {
-  const base = http(RPC_URL, { retryCount: 0 })(parameters);
+  const primary = http(RPC_URL, { retryCount: 0 })(parameters);
+  const fallback = http(RPC_URL_FALLBACK, { retryCount: 0 })(parameters);
   return custom(
     {
       request: (args) => {
         const result = tail.then(async () => {
           await new Promise((resolve) => setTimeout(resolve, Math.max(0, nextStart - Date.now())));
           try {
-            return await base.request(args);
+            return await primary.request(args);
+          } catch (primaryError) {
+            try {
+              return await fallback.request(args);
+            } catch {
+              throw primaryError;
+            }
           } finally {
             nextStart = Date.now() + 600;
           }
